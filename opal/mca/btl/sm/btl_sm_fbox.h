@@ -15,6 +15,9 @@
 #ifndef MCA_BTL_SM_FBOX_H
 #define MCA_BTL_SM_FBOX_H
 
+#include <stdio.h>
+#include "opal/util/proc.h"
+
 #include "opal/mca/btl/sm/btl_sm_types.h"
 #include "opal/mca/btl/sm/btl_sm_virtual.h"
 
@@ -34,7 +37,6 @@ static inline void mca_btl_sm_endpoint_setup_fbox_recv(struct mca_btl_base_endpo
     endpoint->fbox_in.startp = (uint32_t *) base;
     endpoint->fbox_in.start = MCA_BTL_SM_FBOX_ALIGNMENT;
     endpoint->fbox_in.seq = 0;
-    opal_atomic_wmb();
     endpoint->fbox_in.buffer = base;
 }
 
@@ -53,7 +55,6 @@ static inline void mca_btl_sm_endpoint_setup_fbox_send(struct mca_btl_base_endpo
     /* zero out the first header in the fast box */
     memset((char *) base + MCA_BTL_SM_FBOX_ALIGNMENT, 0, MCA_BTL_SM_FBOX_ALIGNMENT);
 
-    opal_atomic_wmb();
     endpoint->fbox_out.buffer = base;
 }
 
@@ -98,17 +99,13 @@ static inline void mca_btl_sm_fbox_set_header(mca_btl_sm_fbox_hdr_t *hdr, uint16
     mca_btl_sm_fbox_hdr_t tmp = {.data = {.tag = tag, .seq = seq, .size = size}};
     /* clear out existing tag/seq */
     hdr->data_i32.value1 = 0;
-    opal_atomic_wmb();
     hdr->data_i32.value0 = size;
-    opal_atomic_wmb();
     hdr->data_i32.value1 = tmp.data_i32.value1;
 }
 
 static inline mca_btl_sm_fbox_hdr_t mca_btl_sm_fbox_read_header(mca_btl_sm_fbox_hdr_t *hdr)
 {
     mca_btl_sm_fbox_hdr_t tmp = {.data_i32 = {.value1 = hdr->data_i32.value1}};
-    ;
-    opal_atomic_rmb();
     tmp.data_i32.value0 = hdr->data_i32.value0;
     return tmp;
 }
@@ -120,10 +117,7 @@ static inline bool mca_btl_sm_fbox_sendi(mca_btl_base_endpoint_t *ep, unsigned c
 {
     const unsigned int fbox_size = mca_btl_sm_component.fbox_size;
     size_t size = header_size + payload_size;
-    unsigned int start, end, buffer_free;
-    size_t data_size = size;
     unsigned char *dst, *data;
-    bool hbs, hbm;
 
     /* don't try to use the per-peer buffer for messages that will fill up more than 25% of the
      * buffer */
@@ -131,68 +125,7 @@ static inline bool mca_btl_sm_fbox_sendi(mca_btl_base_endpoint_t *ep, unsigned c
         return false;
     }
 
-    OPAL_THREAD_LOCK(&ep->lock);
-
-    /* the high bit helps determine if the buffer is empty or full */
-    hbs = MCA_BTL_SM_FBOX_OFFSET_HBS(ep->fbox_out.end);
-    hbm = MCA_BTL_SM_FBOX_OFFSET_HBS(ep->fbox_out.start) == hbs;
-
-    /* read current start and end offsets and check for free space */
-    start = ep->fbox_out.start & MCA_BTL_SM_FBOX_OFFSET_MASK;
-    end = ep->fbox_out.end & MCA_BTL_SM_FBOX_OFFSET_MASK;
-    buffer_free = BUFFER_FREE(start, end, hbm, fbox_size);
-
-    /* need space for the fragment + the header */
-    size = (size + sizeof(mca_btl_sm_fbox_hdr_t) + MCA_BTL_SM_FBOX_ALIGNMENT_MASK)
-           & ~MCA_BTL_SM_FBOX_ALIGNMENT_MASK;
-
-    dst = ep->fbox_out.buffer + end;
-
-    if (OPAL_UNLIKELY(buffer_free < size)) {
-        /* check if we need to free up space for this fragment */
-        BTL_VERBOSE(("not enough room for a fragment of size %u. in use buffer segment: {start: "
-                     "%x, end: %x, high bit matches: %d}",
-                     (unsigned) size, start, end, (int) hbm));
-
-        /* read the current start pointer from the remote peer and recalculate the available buffer
-         * space */
-        start = ep->fbox_out.start = ep->fbox_out.startp[0];
-
-        /* recalculate how much buffer space is available */
-        start &= MCA_BTL_SM_FBOX_OFFSET_MASK;
-        hbm = MCA_BTL_SM_FBOX_OFFSET_HBS(ep->fbox_out.start) == hbs;
-        buffer_free = BUFFER_FREE(start, end, hbm, fbox_size);
-
-        opal_atomic_rmb();
-
-        /* if this is the end of the buffer and the fragment doesn't fit then mark the remaining
-         * buffer space to be skipped and check if the fragment can be written at the beginning of
-         * the buffer. */
-        if (OPAL_UNLIKELY(buffer_free > 0 && buffer_free < size && start <= end)) {
-            BTL_VERBOSE(("message will not fit in remaining buffer space. skipping to beginning"));
-
-            mca_btl_sm_fbox_set_header(MCA_BTL_SM_FBOX_HDR(dst), 0xff, ep->fbox_out.seq++,
-                                       buffer_free - sizeof(mca_btl_sm_fbox_hdr_t));
-
-            end = MCA_BTL_SM_FBOX_ALIGNMENT;
-            /* toggle the high bit */
-            hbs = !hbs;
-            /* toggle the high bit match */
-            buffer_free = BUFFER_FREE(start, end, !hbm, fbox_size);
-            dst = ep->fbox_out.buffer + end;
-        }
-
-        if (OPAL_UNLIKELY(buffer_free < size)) {
-            ep->fbox_out.end = (hbs << 31) | end;
-            opal_atomic_wmb();
-            OPAL_THREAD_UNLOCK(&ep->lock);
-            return false;
-        }
-    }
-
-    BTL_VERBOSE(("writing fragment of size %u to offset %u {start: 0x%x, end: 0x%x (hbs: %d)} of "
-                 "peer's buffer. free = %u",
-                 (unsigned int) size, end, start, end, hbs, buffer_free));
+    dst = ep->fbox_out.buffer + MCA_BTL_SM_FBOX_ALIGNMENT;
 
     data = dst + sizeof(mca_btl_sm_fbox_hdr_t);
 
@@ -202,24 +135,11 @@ static inline bool mca_btl_sm_fbox_sendi(mca_btl_base_endpoint_t *ep, unsigned c
         memcpy(data + header_size, payload, payload_size);
     }
 
-    end += size;
-
-    if (OPAL_UNLIKELY(fbox_size == end)) {
-        /* toggle the high bit */
-        hbs = !hbs;
-        /* reset the end pointer to the beginning of the buffer */
-        end = MCA_BTL_SM_FBOX_ALIGNMENT;
-    } else if (buffer_free > size) {
-        MCA_BTL_SM_FBOX_HDR(ep->fbox_out.buffer + end)->ival = 0;
-    }
-
     /* write out part of the header now. the tag will be written when the data is available */
-    mca_btl_sm_fbox_set_header(MCA_BTL_SM_FBOX_HDR(dst), tag, ep->fbox_out.seq++, data_size);
+    mca_btl_sm_fbox_set_header(MCA_BTL_SM_FBOX_HDR(dst), tag, ep->fbox_out.seq++, size);
 
-    /* align the buffer */
-    ep->fbox_out.end = ((uint32_t) hbs << 31) | end;
-    opal_atomic_wmb();
-    OPAL_THREAD_UNLOCK(&ep->lock);
+    // DEBUG:
+    fprintf(stderr, "Rank %d: Wrote to Fast Box for tag %d size %lu\n", opal_process_info.my_name.vpid, tag, size);
 
     return true;
 }
@@ -231,10 +151,8 @@ static inline bool mca_btl_sm_check_fboxes(void)
 
     for (unsigned int i = 0; i < mca_btl_sm_component.num_fbox_in_endpoints; ++i) {
         mca_btl_base_endpoint_t *ep = mca_btl_sm_component.fbox_in_endpoints[i];
-        unsigned int start = ep->fbox_in.start & MCA_BTL_SM_FBOX_OFFSET_MASK;
+        unsigned int start = MCA_BTL_SM_FBOX_ALIGNMENT;
 
-        /* save the current high bit state */
-        bool hbs = MCA_BTL_SM_FBOX_OFFSET_HBS(ep->fbox_in.start);
         int poll_count;
 
         for (poll_count = 0; poll_count <= MCA_BTL_SM_POLL_COUNT; ++poll_count) {
@@ -242,14 +160,12 @@ static inline bool mca_btl_sm_check_fboxes(void)
                 MCA_BTL_SM_FBOX_HDR(ep->fbox_in.buffer + start));
 
             /* check for a valid tag a sequence number */
-            if (0 == hdr.data.tag || hdr.data.seq != ep->fbox_in.seq) {
+            if (0 == hdr.data.tag || hdr.data.seq < ep->fbox_in.seq) {
                 break;
             }
 
-            ++ep->fbox_in.seq;
-
-            /* force all prior reads to complete before continuing */
-            opal_atomic_rmb();
+            // Catch-up: set expected seq to next one
+            ep->fbox_in.seq = hdr.data.seq + 1;
 
             BTL_VERBOSE(
                 ("got frag from %d with header {.tag = %d, .size = %d, .seq = %u} from offset %u",
@@ -282,25 +198,10 @@ static inline bool mca_btl_sm_check_fboxes(void)
                 mca_btl_sm_hdr_t *sm_hdr = relative2virtual(*value);
                 mca_btl_sm_poll_handle_frag(sm_hdr, ep);
             }
-
-            start = (start + hdr.data.size + sizeof(hdr) + MCA_BTL_SM_FBOX_ALIGNMENT_MASK)
-                    & ~MCA_BTL_SM_FBOX_ALIGNMENT_MASK;
-            if (OPAL_UNLIKELY(fbox_size == start)) {
-                /* jump to the beginning of the buffer */
-                start = MCA_BTL_SM_FBOX_ALIGNMENT;
-                /* toggle the high bit */
-                hbs = !hbs;
-            }
         }
 
         if (poll_count) {
-            BTL_VERBOSE(("left off at offset %u (hbs: %d)", start, hbs));
-
-            /* save where we left off */
-            /* let the sender know where we stopped */
-            opal_atomic_mb();
-            ep->fbox_in.start = ep->fbox_in.startp[0] = ((uint32_t) hbs << 31) | start;
-            processed = true;
+             processed = true;
         }
     }
 
@@ -313,11 +214,9 @@ static inline void mca_btl_sm_try_fbox_setup(mca_btl_base_endpoint_t *ep, mca_bt
     if (OPAL_UNLIKELY(NULL == ep->fbox_out.buffer
                       && mca_btl_sm_component.fbox_threshold
                              == OPAL_THREAD_ADD_FETCH_SIZE_T(&ep->send_count, 1))) {
-        /* protect access to mca_btl_sm_component.segment_offset */
-        OPAL_THREAD_LOCK(&mca_btl_sm_component.lock);
 
-        /* verify the remote side will accept another fbox */
-        if (0 <= opal_atomic_add_fetch_32(&ep->fifo->fbox_available, -1)) {
+        if (ep->fifo->fbox_available > 0) {
+            ep->fifo->fbox_available--; // Non-atomic decrement
             opal_free_list_item_t *fbox = opal_free_list_get(&mca_btl_sm_component.sm_fboxes);
 
             if (NULL != fbox) {
@@ -327,14 +226,11 @@ static inline void mca_btl_sm_try_fbox_setup(mca_btl_base_endpoint_t *ep, mca_bt
 
                 hdr->flags |= MCA_BTL_SM_FLAG_SETUP_FBOX;
                 hdr->fbox_base = virtual2relative((char *) ep->fbox_out.buffer);
+                fprintf(stderr, "Rank %d: Setup Fast Box triggered\n", opal_process_info.my_name.vpid);
             } else {
-                opal_atomic_add_fetch_32(&ep->fifo->fbox_available, 1);
+                ep->fifo->fbox_available++; // Non-atomic increment
             }
-
-            opal_atomic_wmb();
         }
-
-        OPAL_THREAD_UNLOCK(&mca_btl_sm_component.lock);
     }
 }
 

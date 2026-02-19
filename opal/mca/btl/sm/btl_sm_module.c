@@ -37,6 +37,8 @@
 #include "opal/mca/smsc/smsc.h"
 
 #include <string.h>
+#include <stdio.h>
+#include "opal/util/proc.h"
 
 static int sm_del_procs(struct mca_btl_base_module_t *btl, size_t nprocs,
                         struct opal_proc_t **procs, struct mca_btl_base_endpoint_t **peers);

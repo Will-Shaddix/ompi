@@ -25,6 +25,7 @@
 
 #include "opal_config.h"
 
+#include <stdio.h>
 #include "opal/mca/btl/sm/btl_sm.h"
 #include "opal/mca/btl/sm/btl_sm_fifo.h"
 #include "opal/mca/btl/sm/btl_sm_frag.h"
@@ -45,6 +46,9 @@ int mca_btl_sm_sendi(struct mca_btl_base_module_t *btl, struct mca_btl_base_endp
     mca_btl_sm_frag_t *frag;
     void *data_ptr = NULL;
     size_t length;
+
+    // fprintf(stderr, "mca_btl_sm_sendi called. payload_size=%lu\n", payload_size);
+    // fprintf(stderr, "mca_btl_sm_sendi called. payload_size=%lu\n", payload_size);
 
     /* don't attempt sendi if there are pending fragments on the endpoint */
     if (OPAL_UNLIKELY(opal_list_get_size(&endpoint->pending_frags))) {

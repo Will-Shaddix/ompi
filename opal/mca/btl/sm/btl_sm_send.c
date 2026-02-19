@@ -24,6 +24,7 @@
 
 #include "opal_config.h"
 
+#include <stdio.h>
 #include "opal/mca/btl/sm/btl_sm.h"
 #include "opal/mca/btl/sm/btl_sm_fbox.h"
 #include "opal/mca/btl/sm/btl_sm_fifo.h"
@@ -40,6 +41,9 @@ int mca_btl_sm_send(struct mca_btl_base_module_t *btl, struct mca_btl_base_endpo
 {
     mca_btl_sm_frag_t *frag = (mca_btl_sm_frag_t *) descriptor;
     const size_t total_size = frag->segments[0].seg_len;
+
+    // fprintf(stderr, "mca_btl_sm_send called. size=%lu\n", total_size);
+    // fprintf(stderr, "mca_btl_sm_send called. size=%lu\n", total_size);
 
     if (frag->base.des_cbfunc) {
         /* in order to work around a long standing ob1 bug (see #3845) we have to always

@@ -49,6 +49,8 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <stdio.h>
+#include "opal/util/proc.h"
 
 #ifdef HAVE_SYS_PRCTL_H
 #    include <sys/prctl.h>
