@@ -182,11 +182,11 @@ static int mca_btl_vader_component_register (void)
                                            MCA_BASE_VAR_SCOPE_LOCAL,
                                            &mca_btl_vader_component.max_inline_send);
 
-    mca_btl_vader_component.fbox_threshold = 16;
+    mca_btl_vader_component.fbox_threshold = 1;
     (void) mca_base_component_var_register(&mca_btl_vader_component.super.btl_version,
                                            "fbox_threshold", "Number of sends required "
                                            "before an eager send buffer is setup for a peer "
-                                           "(default: 16)", MCA_BASE_VAR_TYPE_UNSIGNED_INT, NULL,
+                                           "(default: 1)", MCA_BASE_VAR_TYPE_UNSIGNED_INT, NULL,
                                            0, MCA_BASE_VAR_FLAG_SETTABLE, OPAL_INFO_LVL_5,
                                            MCA_BASE_VAR_SCOPE_LOCAL, &mca_btl_vader_component.fbox_threshold);
 
